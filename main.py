@@ -244,3 +244,8 @@ course_api = CourseAPI()
 @app.get("/courses/{course_code}")
 async def get_courses(course_code: str):
     return await course_api.get_courses(course_code)
+
+
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
