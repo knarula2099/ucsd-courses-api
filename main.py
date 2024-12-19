@@ -163,7 +163,7 @@ class UCSDCourseScraper:
 
         for row in rows:
             cells = row.find_all('td')
-            if cells and len(cells) > 4 and cells[3].get_text(strip=True) in ["LE", "DI"]:
+            if cells and len(cells) >= 8 and cells[3].get_text(strip=True) in ["LE", "DI"]:
                 course_type = cells[3].get_text(strip=True)
                 time_raw = cells[6].get_text(strip=True)
                 start_time, end_time = UCSDCourseScraper.parse_time_range(
