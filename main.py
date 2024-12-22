@@ -136,30 +136,60 @@ class UCSDCourseScraper:
         return form_data
 
     @classmethod
-    async def fetch_course_data(cls, course_code: str) -> List[List[str]]:
+    async def fetch_course_data(cls, course_code: str) -> List[dict]:
         try:
+            # Fetch the first page
             response = requests.post(
                 cls.BASE_URL,
                 headers=cls.get_headers(),
                 data=cls.create_form_data(course_code)
             )
             response.raise_for_status()
-            return cls.parse_response(response.text)
+
+            # Parse the first page
+            combined_html = response.text
+
+            # Check for the existence of a second page
+            soup = BeautifulSoup(response.text, 'html.parser')
+            next_page_link = soup.find(
+                'a', href=lambda href: href and "page=2" in href)
+
+            if next_page_link:
+                # Fetch the second page
+                second_page_response = requests.get(
+                    cls.BASE_URL,
+                    headers=cls.get_headers(),
+                    params={"page": "2"}  # Second page URL param
+                )
+                second_page_response.raise_for_status()
+
+                # Append the second page HTML to the combined HTML
+                combined_html += second_page_response.text
+
+            with open('test.html', 'w') as f:
+                f.write(combined_html)
+
+            # Parse the combined HTML
+            return cls.parse_response(combined_html)
+
         except requests.RequestException as e:
             raise HTTPException(
-                status_code=500, detail="Failed to fetch course data")
+                status_code=500, detail=f"Failed to fetch course data: {str(e)}"
+            )
 
     @staticmethod
     def parse_response(html_content: str) -> Dict[str, List[Dict[str, str]]]:
         soup = BeautifulSoup(html_content, 'html.parser')
-        table = soup.find('table', class_='tbrdr')
+        table = soup.find_all(class_='tbrdr')
 
         if not table:
             raise HTTPException(status_code=404, detail="No courses found")
 
         lecture_info = []
         discussion_info = []
-        rows = table.find_all('tr')
+        rows = []
+        for t in table:
+            rows += t.find_all('tr')
 
         for row in rows:
             cells = row.find_all('td')
@@ -187,7 +217,7 @@ class UCSDCourseScraper:
 
         return {"lecture_info": lecture_info, "discussion_info": discussion_info}
 
-    @staticmethod
+    @ staticmethod
     def parse_time_range(time_raw: str):
         """
         Parse a time string in the format "11:00a-12:20p" into start and end times.
@@ -241,11 +271,11 @@ class CourseAPI:
 course_api = CourseAPI()
 
 
-@app.get("/courses/{course_code}")
+@ app.get("/courses/{course_code}")
 async def get_courses(course_code: str):
     return await course_api.get_courses(course_code)
 
 
-@app.get("/")
+@ app.get("/")
 async def root():
     return {"message": "Hello World"}
