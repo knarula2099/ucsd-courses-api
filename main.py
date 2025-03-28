@@ -53,7 +53,7 @@ class UCSDCourseScraper:
     @staticmethod
     def get_default_form_data() -> Dict[str, str]:
         return {
-            'selectedTerm': 'WI25',
+            'selectedTerm': 'SP25',
             'xsoc_term': '',
             'loggedIn': 'false',
             'tabNum': 'tabs-crs',
