@@ -4,9 +4,13 @@ import requests
 from bs4 import BeautifulSoup
 from typing import List, Optional, Dict
 import datetime
+import re
 
-app = FastAPI()
-
+app = FastAPI(
+    title="UCSD Course Scraper API",
+    description="API to fetch course information from UCSD's Schedule of Classes website",
+    version="1.0.0"
+)
 
 class LectureInfo(BaseModel):
     days: str
@@ -135,8 +139,52 @@ class UCSDCourseScraper:
         form_data['courses'] = course_code
         return form_data
 
+    @staticmethod
+    def is_time_format(text: str) -> bool:
+        """
+        Check if the given text matches the expected time format (e.g., "9:30a-10:50a").
+        """
+        # Using regex to check for time format like "9:30a-10:50a" or "11:00a-12:20p"
+        time_pattern = r'^\d{1,2}:\d{2}[ap]-\d{1,2}:\d{2}[ap]$'
+        return bool(re.match(time_pattern, text.strip()))
+
+    @staticmethod
+    def parse_time_range(time_raw: str):
+        """
+        Parse a time string in the format "11:00a-12:20p" into start and end times.
+        """
+        try:
+            # Check if the input is actually a time format
+            if not UCSDCourseScraper.is_time_format(time_raw):
+                return None, None
+                
+            # Split into start and end
+            time_raw = time_raw.strip()
+            start_raw, end_raw = time_raw.split("-")
+
+            if start_raw[-1] == 'a':
+                start_raw = start_raw[:-1] + ' AM'
+            else:
+                start_raw = start_raw[:-1] + ' PM'
+            if end_raw[-1] == 'a':
+                end_raw = end_raw[:-1] + ' AM'
+            else:
+                end_raw = end_raw[:-1] + ' PM'
+
+            # Parse the start and end times
+            start_time = datetime.datetime.strptime(
+                start_raw, "%I:%M %p").time().strftime("%H:%M")
+            end_time = datetime.datetime.strptime(
+                end_raw, "%I:%M %p").time().strftime("%H:%M")
+
+            # Return in HH:MM format
+            return start_time, end_time
+        except Exception as e:
+            print(f"Error parsing time '{time_raw}': {str(e)}")
+            return None, None
+
     @classmethod
-    async def fetch_course_data(cls, course_code: str) -> List[dict]:
+    async def fetch_course_data(cls, course_code: str) -> Dict[str, List[Dict[str, str]]]:
         try:
             # Fetch the first page
             response = requests.post(
@@ -166,9 +214,6 @@ class UCSDCourseScraper:
                 # Append the second page HTML to the combined HTML
                 combined_html += second_page_response.text
 
-            with open('test.html', 'w') as f:
-                f.write(combined_html)
-
             # Parse the combined HTML
             return cls.parse_response(combined_html)
 
@@ -180,80 +225,66 @@ class UCSDCourseScraper:
     @staticmethod
     def parse_response(html_content: str) -> Dict[str, List[Dict[str, str]]]:
         soup = BeautifulSoup(html_content, 'html.parser')
-        table = soup.find_all(class_='tbrdr')
+        tables = soup.find_all(class_='tbrdr')
 
-        if not table:
+        if not tables:
             raise HTTPException(status_code=404, detail="No courses found")
 
         lecture_info = []
         discussion_info = []
         rows = []
-        for t in table:
+        
+        for t in tables:
             rows += t.find_all('tr')
+
+        # Track processed sections to avoid duplicates
+        found_section_details = {}
 
         for row in rows:
             cells = row.find_all('td')
-            if cells and len(cells) >= 8 and cells[3].get_text(strip=True) in ["LE", "DI", "LA"]:
-                course_type = cells[3].get_text(strip=True)
-                time_raw = cells[6].get_text(strip=True)
-                start_time, end_time = UCSDCourseScraper.parse_time_range(
-                    time_raw)
-                details = {
-                    "days": cells[5].get_text(strip=True),
-                    "time": time_raw,
-                    "startTime": start_time,
-                    "endTime": end_time,
-                    "location": cells[7].get_text(strip=True) + " " + cells[8].get_text(strip=True),
-                    "section": cells[4].get_text(strip=True)
-                }
-                if course_type == "LE":
-                    lecture_info.append(details)
-                elif course_type == "DI" or course_type == "LA":
-                    discussion_info.append(details)
+            
+            # Skip rows with insufficient cells
+            if not cells or len(cells) < 5:
+                continue
+                
+            course_type = cells[3].get_text(strip=True) if len(cells) > 3 else None
+                
+            # Process only rows with recognized course types
+            if course_type in ["LE", "DI", "LA"]:
+                section = cells[4].get_text(strip=True)
+                
+                # Get the time cell content
+                time_raw = cells[6].get_text(strip=True) if len(cells) > 6 else ""
+                
+                # Check if this is actually a time format
+                if UCSDCourseScraper.is_time_format(time_raw):
+                    start_time, end_time = UCSDCourseScraper.parse_time_range(time_raw)
+                    
+                    if start_time and end_time:
+                        details = {
+                            "days": cells[5].get_text(strip=True) if len(cells) > 5 else "",
+                            "time": time_raw,
+                            "startTime": start_time,
+                            "endTime": end_time,
+                            "location": cells[7].get_text(strip=True) + " " + cells[8].get_text(strip=True) if len(cells) > 8 else "",
+                            "section": section
+                        }
+                        
+                        # Create a unique key to avoid duplicates
+                        detail_key = f"{section}_{time_raw}_{details['location']}"
+                        
+                        if detail_key not in found_section_details:
+                            found_section_details[detail_key] = True
+                            
+                            if course_type == "LE":
+                                lecture_info.append(details)
+                            elif course_type in ["DI", "LA"]:
+                                discussion_info.append(details)
 
         if not lecture_info:
-            raise HTTPException(
-                status_code=404, detail="No lecture information found")
+            raise HTTPException(status_code=404, detail="No lecture information found")
 
         return {"lecture_info": lecture_info, "discussion_info": discussion_info}
-
-    @ staticmethod
-    def parse_time_range(time_raw: str):
-        """
-        Parse a time string in the format "11:00a-12:20p" into start and end times.
-
-        Args:
-            time_raw (str): Raw time string from the table.
-
-        Returns:
-            (str, str): Start time and end time in ISO 8601 format (HH:MM:SS).
-        """
-        try:
-            # Ensure there are no extra spaces and split into start and end
-            # time_raw = time_raw.replace(" ", "")
-            start_raw, end_raw = time_raw.split("-")
-
-            if start_raw[-1] == 'a':
-                start_raw = start_raw[:-1] + ' AM'
-            else:
-                start_raw = start_raw[:-1] + ' PM'
-            if end_raw[-1] == 'a':
-                end_raw = end_raw[:-1] + ' AM'
-            else:
-                end_raw = end_raw[:-1] + ' PM'
-
-            # Parse the start and end times
-            start_time = datetime.datetime.strptime(
-                start_raw, "%I:%M %p").time().strftime("%H:%M")
-            end_time = datetime.datetime.strptime(
-                end_raw, "%I:%M %p").time().strftime("%H:%M")
-
-            # Return in HH:MM:SS format
-            return start_time, end_time
-        except ValueError:
-            raise HTTPException(
-                status_code=500, detail=f"Invalid time format: {time_raw}"
-            )
 
 
 class CourseAPI:
@@ -271,11 +302,24 @@ class CourseAPI:
 course_api = CourseAPI()
 
 
-@ app.get("/courses/{course_code}")
-async def get_courses(course_code: str):
-    return await course_api.get_courses(course_code)
-
-
-@ app.get("/")
+@app.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {
+        "message": "UCSD Course Scraper API",
+        "usage": "GET /courses/{course_code} to retrieve course information",
+        "example": "GET /courses/CSE110"
+    }
+
+
+@app.get("/courses/{course_code}", response_model=CourseResponse)
+async def get_courses(course_code: str):
+    """
+    Get course information for a specific UCSD course code.
+    
+    Args:
+        course_code: The course code to search for (e.g., CSE110, MATH20A)
+        
+    Returns:
+        CourseResponse: Information about lectures and discussions for the course
+    """
+    return await course_api.get_courses(course_code)
